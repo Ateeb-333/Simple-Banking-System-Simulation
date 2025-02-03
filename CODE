@@ -1,0 +1,152 @@
+#include <iostream>
+#include <map>
+#include <mutex>
+#include <thread>
+#include <vector>
+#include <queue>
+#include <condition_variable>
+#include <functional>
+
+// Global Variables
+std::map<int, double> accounts;    // Stores account balances
+std::mutex account_mutex;          // Synchronizes access to accounts
+std::queue<std::string> log_queue; // Logs for transactions
+std::mutex log_mutex;              // Mutex for logging
+std::condition_variable log_cv;    // Condition variable for logging
+
+// System Call Interface
+bool create_account(int account_id, double initial_balance)
+{
+    std::lock_guard<std::mutex> lock(account_mutex);
+    if (accounts.find(account_id) != accounts.end())
+    {
+        std::cerr << "Error: Account already exists.\n";
+        return false;
+    }
+    accounts[account_id] = initial_balance;
+    return true;
+}
+
+bool deposit(int account_id, double amount)
+{
+    std::lock_guard<std::mutex> lock(account_mutex);
+    if (accounts.find(account_id) == accounts.end())
+    {
+        std::cerr << "Error: Account not found.\n";
+        return false;
+    }
+    accounts[account_id] += amount;
+    return true;
+}
+
+bool withdraw(int account_id, double amount)
+{
+    std::lock_guard<std::mutex> lock(account_mutex);
+    if (accounts.find(account_id) == accounts.end())
+    {
+        std::cerr << "Error: Account not found.\n";
+        return false;
+    }
+    if (accounts[account_id] < amount)
+    {
+        std::cerr << "Error: Insufficient funds.\n";
+        return false;
+    }
+    accounts[account_id] -= amount;
+    return true;
+}
+
+double check_balance(int account_id)
+{
+    std::lock_guard<std::mutex> lock(account_mutex);
+    if (accounts.find(account_id) == accounts.end())
+    {
+        std::cerr << "Error: Account not found.\n";
+        return -1;
+    }
+    return accounts[account_id];
+}
+
+// Logging Thread
+void logger()
+{
+    while (true)
+    {
+        std::unique_lock<std::mutex> lock(log_mutex);
+        log_cv.wait(lock, []
+                    { return !log_queue.empty(); });
+
+        while (!log_queue.empty())
+        {
+            std::string log_entry = log_queue.front();
+            log_queue.pop();
+            std::cout << "Log: " << log_entry << "\n";
+        }
+    }
+}
+
+// Transaction Processing
+void process_transaction(int account_id, double amount, bool is_deposit)
+{
+    std::string transaction_type = is_deposit ? "Deposit" : "Withdraw";
+
+    if (is_deposit)
+    {
+        if (deposit(account_id, amount))
+        {
+            std::lock_guard<std::mutex> lock(log_mutex);
+            log_queue.push("Successful " + transaction_type + " of " + std::to_string(amount) + " for Account " + std::to_string(account_id));
+            log_cv.notify_one();
+        }
+    }
+    else
+    {
+        if (withdraw(account_id, amount))
+        {
+            std::lock_guard<std::mutex> lock(log_mutex);
+            log_queue.push("Successful " + transaction_type + " of " + std::to_string(amount) + " for Account " + std::to_string(account_id));
+            log_cv.notify_one();
+        }
+    }
+}
+
+// Simulation of Transactions
+void simulate_transactions()
+{
+    std::vector<std::thread> transactions;
+
+    // Create accounts
+    create_account(1, 1000.0);
+    create_account(2, 2000.0);
+
+    // Perform transactions
+    transactions.emplace_back([=]()
+                              { process_transaction(1, 500.0, true); }); // Deposit
+    transactions.emplace_back([=]()
+                              { process_transaction(1, 300.0, false); }); // Withdraw
+    transactions.emplace_back([=]()
+                              { process_transaction(2, 1000.0, true); }); // Deposit
+    transactions.emplace_back([=]()
+                              { process_transaction(2, 500.0, false); }); // Withdraw
+
+    // Join threads
+    for (auto &t : transactions)
+    {
+        t.join();
+    }
+}
+
+// Main Function
+int main()
+{
+    // Start logger thread
+    std::thread log_thread(logger);
+    log_thread.detach(); // Detach so it runs independently
+
+    // Simulate transactions
+    simulate_transactions();
+
+    // Allow logger to finish
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    return 0;
+}
